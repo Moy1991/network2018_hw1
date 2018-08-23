@@ -1,0 +1,297 @@
+---
+title: "Hw1"
+author: "Bryant Moy"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Network Homework
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+rm(list = ls())
+setwd("~/Desktop/hw")
+load("nigeria.rda")
+
+# Load Libraries
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+library(igraph)
+```
+
+```{r}
+# Check the number of senders and receivers
+
+nigeria%>%
+  distinct(sender)
+
+nigeria %>%
+  distinct(receiver) 
+
+#37 each
+```
+## Make Sociomatrix
+
+
+
+```{r  }
+# Make into sociomatrix with multiple steps.
+# I know it's convoluted and unnecessary
+df<-nigeria %>%
+  spread(key=year, value=conflict)
+
+# for the $operator
+names(df)[3:19] <- paste0("y",names(df)[3:19], sep="")
+
+
+df1<-df %>% 
+  mutate(Sum = rowSums(.[names(.)[3:19]], na.rm = TRUE))
+
+df2<-df1 %>%
+  select(sender,receiver,Sum)
+
+sender <- df2 %>%
+  distinct(sender) %>%
+  rename(label = sender)
+
+receiver <- df2 %>%
+  distinct(receiver) %>%
+  rename(label = receiver)
+
+nodes <- full_join(sender, receiver, by = "label")
+nodes <- nodes %>% rowid_to_column("id")
+
+edges <- df2 %>% 
+  left_join(nodes, by = c("sender" = "label")) 
+
+edges <- edges %>% 
+  left_join(nodes, by = c("receiver" = "label"))
+
+
+edges <- select(edges, sender, receiver, Sum)
+edgelist<-edges
+
+
+
+adjMat<-dcast(df2,sender~receiver)
+adjMat <- select(adjMat, -sender)
+adjMat<-as.matrix(adjMat, rownames.force = F)
+rownames(adjMat)<-colnames(adjMat)
+
+
+diag(adjMat)<-NA
+#adjMat
+
+
+# taking weights out and replacing with 1 for conflict, 0 for not
+for(i in 1:37){
+  for(j in 1:37){
+    adjMat[i,j]<- ifelse(adjMat[i,j]==0,0,1)
+  }
+}
+
+# Check work
+dim(adjMat)
+sum(adjMat, na.rm=T)
+
+
+```
+
+## Make into Graphing Object and explore
+
+```{r}
+
+## Make igraph:: graph object
+g = graph_from_adjacency_matrix(adjMat, 
+                                mode='directed', 
+                                #weighted=T,
+                                diag=FALSE #not self action
+)
+
+## check out the properties of this object
+g
+
+
+
+## Degree- Number of edges connected to a node
+D<-igraph::degree(g)
+D<-as.data.frame(D)
+D<-ifelse(D !=0,1,0)
+## Attributes of graph objects
+V(g) #names of vertices, the actors.
+vertex_attr(g) # Names 37
+E(g) # all of the edges
+
+
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(sna)
+net<-network(adjMat)
+
+# Police\n(Nigeria) is  21. They are the influential actor
+which.max(degree(net))
+
+
+# Eigenvector centrality Police\n(Nigeria)
+which.max(igraph::eigen_centrality(g, directed = T)$vector)
+
+
+
+
+# Create clusters based on structural equivalence: Cluster Dendrogram
+eq <- equiv.clust(adjMat)
+plot(eq,hang=-1)
+# It looks like entity 17 and 21 are a group by themselve.
+# At first glance, I would opt to use two clusters.
+
+
+block_2 <- blockmodel(adjMat, eq, k = 2)
+
+bmems<-block_2$block.membership[order(block_2$order.vector)]
+bmems # the second block corresponds to enitity 17 and 21
+```
+
+
+
+
+
+
+```{r}
+# Make Network Graph
+# assume 2 clusters
+colrs <- c("green", "red") # Green 1, Red 2
+V(g)$color <- colrs[bmems]
+
+#Compute node degrees (#links) and use that to set node size:
+deg <- igraph::degree(g, mode="all")
+V(g)$size <- deg*3
+
+E(g)$arrow.size <- .2  # make arrow size small
+E(g)$edge.color <- "gray80" 
+
+l <- layout.fruchterman.reingold(g)
+
+# Network Graph
+#plot(g, rescale=T, layout=layout_on_grid,vertex.label.cex = .75, main="Network Graph")
+
+```
+
+ ![Figure 1: Network Plot](/Users/bryantmoy/Desktop/hw/netplot.png)
+
+
+
+## Ten Fold-Cross Validation
+
+```{r}
+library(PRROC) # AUC 
+# Generate 2 through 4 clusters
+block_2 <- blockmodel(adjMat, eq, k = 2)
+mems_2<-block_2$block.membership[order(block_2$order.vector)]
+
+block_3 <- blockmodel(adjMat, eq, k = 3)
+mems_3<-block_3$block.membership[order(block_3$order.vector)]
+
+block_4 <- blockmodel(adjMat, eq, k = 4)
+mems_4<-block_4$block.membership[order(block_4$order.vector)]
+
+
+Cl<-cbind(mems_2,mems_3,mems_4,D)
+Cl<-as.data.frame(Cl)
+
+library('cvTools')
+folds <- cvFolds(nrow(Cl), K = 10)
+Cl$p2 <- rep(NA, nrow(Cl))
+Cl$p3 <- rep(NA, nrow(Cl))
+Cl$p4 <- rep(NA, nrow(Cl))
+
+#train <- Cl[folds$subsets[folds$which != 1], ] # Train set
+#test <- Cl[folds$subsets[folds$which == i] ,]
+ #glm(D ~ mems_2, data = train.set, family = binomial(link = 'logit'))
+
+  
+for (i in 1:10){
+  train.set <- Cl[folds$subsets[folds$which != i], ] # Train set
+  test.set <- Cl[folds$subsets[folds$which == i] ,] # Test set
+  
+  glm2 <- glm(D ~ mems_2, data = train.set, family = binomial(link = 'logit'))
+  P2 <- predict(glm2, newdata = test.set, type = 'response')
+  Cl[folds$subsets[folds$which == i], ]$p2 <- P2
+  
+  glm3 <- glm(D ~ mems_3, data = train.set, family = binomial(link = 'logit'))
+  P3 <- predict(glm3, newdata = test.set, type = 'response')
+  Cl[folds$subsets[folds$which == i], ]$p3 <- P3
+  
+  glm4 <- glm(D ~ mems_4, data = train.set, family = binomial(link = 'logit'))
+  P4 <- predict(glm4, newdata = test.set, type = 'response')
+  Cl[folds$subsets[folds$which == i], ]$p4 <- P4
+}
+
+
+A1<-Cl[Cl$D == 1, 1]
+B1<-Cl[Cl$D == 0, 1]
+AB1<-roc.curve(A1, B1, curve = T)
+AB1p<-pr.curve(A1, B1, curve = T)
+A2<-Cl[Cl$D == 1, 2]
+B2<-Cl[Cl$D == 0, 2]
+AB2<-roc.curve(A2, B2, curve = T)
+AB2p<-pr.curve(A2, B2, curve = T)
+A3<-Cl[Cl$D == 1, 3]
+B3<-Cl[Cl$D == 0, 3]
+AB3<-roc.curve(A3, B3, curve = T)
+AB3p<-pr.curve(A3, B3, curve = T)
+
+
+c(AB1$auc, AB2$auc, AB3$auc)
+c(AB1p$auc.integral,AB2p$auc.integral,AB3p$auc.integral)
+
+```
+
+
+
+
+## For Analysis
+```{r}
+library(network,quietly=T)
+library(sna,quietly=T)
+library(statnet,quietly=T)
+
+list.vertex.attributes(net)
+net<-set.vertex.attribute(net, 'group', bmems)
+
+
+get.vertex.attribute(net,"group")
+
+
+m1<- ergm(net~edges)# like intercept
+m1 # 
+exp(m1$coef) # denisity of the network is 7.6
+
+
+
+m2<- ergm(net~edges + nodematch("group")) # nodal covariate
+# nodematch is whether two nodes share the same value of the attribute
+summary(m2)
+exp(m2$coef) 
+# If two nodes share the same value, they are 10% more likley to form a tie.
+
+
+m3<- ergm(net~edges + nodematch("group")+mutual)# Reciprocity mutual is a network term 
+# reciprocity
+summary(m3)
+exp(m3$coef)
+mcmc.diagnostics(m3)
+
+
+
+```
+The first model just shows the density in the network. In model 2, I added a nodal covarite for group. This my group has two clusters. One cluster has the Nigeria Police and Military. The other has everyone else. This suggest that two nodes who are in the same group/cluster, are less likely to fight with each other. For example, the Nigerian Police and Military are less likely to fight with each other, but more likely to fight other groups like MASSOB or Boko Haram. To test this future, I ran model three with the mutual term for reciporcity. So we confirm that between group interaction is more likely to occur and within cluster interactions are less likely to occur.
+
